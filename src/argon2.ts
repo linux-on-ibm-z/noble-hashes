@@ -10,7 +10,7 @@
  */
 import { add3H, add3L, rotr32H, rotr32L, rotrBH, rotrBL, rotrSH, rotrSL } from './_u64.ts';
 import { blake2b } from './blake2.ts';
-import { anumber, clean, kdfInputToBytes, nextTick, u32, u8, type KDFInput } from './utils.ts';
+import { anumber, clean, kdfInputToBytes, nextTick, u32, u8, swap32IfBE, type KDFInput } from './utils.ts';
 
 const AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 } as const;
 type Types = (typeof AT)[keyof typeof AT];
@@ -123,30 +123,36 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 }
 
 // Variable-Length Hash Function H'
-function Hp(A: Uint32Array, dkLen: number) {
+function Hp(A: Uint32Array, dkLen: number): Uint8Array {
+  swap32IfBE(A);
   const A8 = u8(A);
   const T = new Uint32Array(1);
-  const T8 = u8(T);
   T[0] = dkLen;
+  swap32IfBE(T);
+  const T8 = u8(T);
+  let out: Uint8Array;
   // Fast path
-  if (dkLen <= 64) return blake2b.create({ dkLen }).update(T8).update(A8).digest();
-  const out = new Uint8Array(dkLen);
-  let V = blake2b.create({}).update(T8).update(A8).digest();
-  let pos = 0;
-  // First block
-  out.set(V.subarray(0, 32));
-  pos += 32;
-  // Rest blocks
-  for (; dkLen - pos > 64; pos += 32) {
-    const Vh = blake2b.create({}).update(V);
-    Vh.digestInto(V);
-    Vh.destroy();
-    out.set(V.subarray(0, 32), pos);
+  if (dkLen <= 64) {
+    out = blake2b.create({ dkLen }).update(T8).update(A8).digest();
   }
-  // Last block
-  out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
-  clean(V, T);
-  return u32(out);
+  else {
+    out = new Uint8Array(dkLen);
+    let V = blake2b.create({}).update(T8).update(A8).digest();
+    let pos = 0;
+    out.set(V.subarray(0, 32));
+    pos += 32;
+    for (; dkLen - pos > 64; pos += 32) {
+      const Vh = blake2b.create({}).update(V);
+      Vh.digestInto(V);
+      Vh.destroy();
+      out.set(V.subarray(0, 32), pos);
+    }
+    out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
+    clean(V);
+  }
+  swap32IfBE(A); // restore A back to host endianness
+  clean(T);
+  return out;
 }
 
 // Used only inside process block!
@@ -255,15 +261,18 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
   const BUF8 = u8(BUF);
   for (let item of [p, dkLen, m, t, version, type]) {
     BUF[0] = item;
+    swap32IfBE(BUF);
     h.update(BUF8);
   }
   for (let i of [password, salt, key, personalization]) {
     BUF[0] = i.length; // BUF is u32 array, this is valid
+    swap32IfBE(BUF);
     h.update(BUF8).update(i);
   }
   const H0 = new Uint32Array(18);
   const H0_8 = u8(H0);
   h.digestInto(H0_8);
+  swap32IfBE(H0);
   // 256 u32 = 1024 (BLOCK_SIZE), fills A2_BUF on processing
 
   // Params
@@ -283,10 +292,14 @@ function argon2Init(password: KDFInput, salt: KDFInput, type: Types, opts: Argon
     // B[i][0] = H'^(1024)(H_0 || LE32(0) || LE32(i))
     H0[17] = l;
     H0[16] = 0;
-    B.set(Hp(H0, 1024), i);
+    const hp1 = u32(Hp(H0, 1024));
+    swap32IfBE(hp1);
+    B.set(hp1, i);
     // B[i][1] = H'^(1024)(H_0 || LE32(1) || LE32(i))
     H0[16] = 1;
-    B.set(Hp(H0, 1024), i + 256);
+    const hp2 = u32(Hp(H0, 1024));
+    swap32IfBE(hp2);
+    B.set(hp2, i + 256);
   }
   let perBlock = () => {};
   if (onProgress) {
@@ -309,7 +322,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = u8(Hp(B_final, dkLen));
+  const res = Hp(B_final, dkLen);  // return LE byte array.
   clean(B_final);
   return res;
 }
