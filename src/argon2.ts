@@ -123,7 +123,7 @@ function block(x: Uint32Array, xPos: number, yPos: number, outPos: number, needX
 }
 
 // Variable-Length Hash Function H'
-function Hp(A: Uint32Array, dkLen: number): Uint8Array {
+function Hp(A: Uint32Array, dkLen: number) {
   swap32IfBE(A);
   const A8 = u8(A);
   const T = new Uint32Array(1);
@@ -152,7 +152,7 @@ function Hp(A: Uint32Array, dkLen: number): Uint8Array {
   }
   swap32IfBE(A); // restore A back to host endianness
   clean(T);
-  return out;
+  return u32(out);
 }
 
 // Used only inside process block!
@@ -322,7 +322,7 @@ function argon2Output(B: Uint32Array, p: number, laneLen: number, dkLen: number)
   const B_final = new Uint32Array(256);
   for (let l = 0; l < p; l++)
     for (let j = 0; j < 256; j++) B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
-  const res = Hp(B_final, dkLen);  // return LE byte array.
+  const res = u8(Hp(B_final, dkLen));
   clean(B_final);
   return res;
 }
